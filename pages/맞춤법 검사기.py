@@ -1,392 +1,510 @@
 
 import streamlit as st
-import re
+from hanspell import spell_checker
+import html
+import time
 
+# --------------------------------------------------
+# 기본 설정
+# --------------------------------------------------
 st.set_page_config(
-    page_title="말랑말랑 문장수선소",
-    page_icon="💌",
+    page_title="바른글 | 맞춤법 검사기",
+    page_icon="✍️",
     layout="centered",
+    initial_sidebar_state="collapsed",
 )
 
-# ---------- 귀여운 디자인 ----------
-st.markdown("""
-<style>
-.stApp {
-    background: linear-gradient(180deg, #fff7fb 0%, #fffdf7 100%);
-}
-.main .block-container {
-    max-width: 900px;
-    padding-top: 2rem;
-    padding-bottom: 3rem;
-}
-h1, h2, h3 {
-    color: #985879 !important;
-}
-div.stButton > button {
-    background-color: #edb6d0;
-    color: #61384d;
-    border: 0;
-    border-radius: 14px;
-    font-weight: 600;
-    min-height: 42px;
-}
-div.stButton > button:hover {
-    background-color: #e79dc1;
-    color: #ffffff;
-    border: 0;
-}
-div[data-testid="stAlert"] {
-    border-radius: 14px;
-}
-div[data-testid="stTextArea"] textarea {
-    border-radius: 14px;
-    border-color: #efcbdc;
-}
-div[data-testid="stTabs"] button {
-    color: #985879;
-}
-.soft-card {
-    background: #fff;
-    border: 1px solid #f3d9e5;
-    border-radius: 18px;
-    padding: 18px;
-    margin-bottom: 12px;
-}
-.small-note {
-    color: #997d8b;
-    font-size: 0.9rem;
-}
-</style>
-""", unsafe_allow_html=True)
+# --------------------------------------------------
+# 디자인
+# --------------------------------------------------
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap');
 
+    :root {
+        --green: #176B52;
+        --green-dark: #10513E;
+        --green-light: #EAF4EF;
+        --text: #202923;
+        --muted: #78837D;
+        --border: #E4EAE6;
+    }
 
-# ---------- 문장 다듬기 ----------
-def convert_to_email(text, purpose):
-    """일상적인 문장을 정중한 업무용 문장으로 바꿉니다."""
-    original = text.strip()
-    if not original:
-        return ""
+    html, body, [class*="css"] {
+        font-family: 'Noto Sans KR', sans-serif;
+    }
 
-    # 흔한 구어체를 정중한 표현으로 변경
-    replacements = [
-        (r"해줘요", "부탁드립니다"),
-        (r"해주세요", "부탁드립니다"),
-        (r"해 줘", "해 주시면 감사하겠습니다"),
-        (r"알려줘", "알려 주시면 감사하겠습니다"),
-        (r"알려주세요", "알려 주시면 감사하겠습니다"),
-        (r"보내줘", "보내 주시면 감사하겠습니다"),
-        (r"보내주세요", "보내 주시면 감사하겠습니다"),
-        (r"확인해줘", "확인해 주시면 감사하겠습니다"),
-        (r"확인해주세요", "확인해 주시면 감사하겠습니다"),
-        (r"빨리 보내", "가능하신 한 빠르게 보내 주시면 감사하겠습니다"),
-        (r"왜 답이 없어요\??", "이전에 드린 메일을 확인하셨는지 여쭙습니다."),
-        (r"뭐예요\??", "어떤 내용인지 확인 부탁드립니다."),
-        (r"몰라요", "현재 해당 내용을 정확히 파악하지 못했습니다."),
-        (r"미안해요", "죄송합니다"),
-        (r"미안합니다", "죄송합니다"),
-        (r"고마워요", "감사합니다"),
-        (r"고마워", "감사합니다"),
-        (r"ㅇㅋ|ㅇㅇ", "네, 확인했습니다"),
-        (r"ㄱㄱ", "진행하겠습니다"),
-        (r"안됨", "진행이 어렵습니다"),
-        (r"안 돼요", "진행이 어렵습니다"),
-        (r"할게요", "진행하겠습니다"),
-        (r"했어요", "완료했습니다"),
-    ]
+    .stApp {
+        background: #F8FAF8;
+    }
 
-    result = original
-    for pattern, replacement in replacements:
-        result = re.sub(pattern, replacement, result)
+    .block-container {
+        max-width: 880px;
+        padding-top: 2.2rem;
+        padding-bottom: 3rem;
+    }
 
-    # 목적에 따라 인사말과 마무리 추가
-    if purpose == "부탁":
-        opening = "안녕하세요.\n"
-        ending = "\n\n확인해 주시면 감사하겠습니다.\n감사합니다."
-    elif purpose == "사과":
-        opening = "안녕하세요.\n"
-        ending = "\n\n불편을 드려 죄송합니다. 같은 일이 반복되지 않도록 주의하겠습니다.\n감사합니다."
-    elif purpose == "감사":
-        opening = "안녕하세요.\n"
-        ending = "\n\n도움 주셔서 진심으로 감사합니다.\n좋은 하루 보내세요."
-    elif purpose == "재촉":
-        opening = "안녕하세요.\n"
-        ending = "\n\n바쁘시겠지만 확인 후 회신해 주시면 감사하겠습니다.\n감사합니다."
+    header[data-testid="stHeader"] {
+        background: transparent;
+    }
+
+    #MainMenu, footer {
+        visibility: hidden;
+    }
+
+    .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 28px;
+    }
+
+    .brand-icon {
+        width: 46px;
+        height: 46px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--green);
+        color: white;
+        border-radius: 15px;
+        font-size: 23px;
+    }
+
+    .brand-name {
+        font-size: 23px;
+        font-weight: 800;
+        letter-spacing: -1px;
+        color: var(--green-dark);
+    }
+
+    .brand-sub {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 1px;
+    }
+
+    .hero {
+        margin-bottom: 26px;
+    }
+
+    .hero-tag {
+        display: inline-block;
+        background: var(--green-light);
+        color: var(--green);
+        padding: 6px 11px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 700;
+        margin-bottom: 12px;
+    }
+
+    .hero-title {
+        font-size: clamp(27px, 5vw, 36px);
+        line-height: 1.4;
+        letter-spacing: -1.7px;
+        font-weight: 800;
+        color: var(--text);
+        margin: 0 0 10px 0;
+    }
+
+    .hero-desc {
+        font-size: 14px;
+        line-height: 1.8;
+        color: var(--muted);
+        margin: 0;
+    }
+
+    .panel {
+        background: white;
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        padding: 22px;
+        margin-bottom: 18px;
+        box-shadow: 0 5px 22px rgba(30, 60, 45, 0.025);
+    }
+
+    .section-label {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text);
+        margin-bottom: 5px;
+    }
+
+    .section-help {
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 14px;
+    }
+
+    .stTextArea textarea {
+        background: #FBFCFB !important;
+        border: 1px solid #E1E8E3 !important;
+        border-radius: 12px !important;
+        color: var(--text) !important;
+        font-size: 15px !important;
+        line-height: 1.9 !important;
+        padding: 15px !important;
+    }
+
+    .stTextArea textarea:focus {
+        border-color: var(--green) !important;
+        box-shadow: 0 0 0 1px var(--green) !important;
+    }
+
+    .stButton > button {
+        border-radius: 12px;
+        min-height: 46px;
+        font-weight: 700;
+        transition: all .2s ease;
+    }
+
+    .stButton > button[kind="primary"] {
+        background: var(--green);
+        border: 1px solid var(--green);
+        color: white;
+    }
+
+    .stButton > button[kind="primary"]:hover {
+        background: var(--green-dark);
+        border-color: var(--green-dark);
+    }
+
+    .result-box {
+        background: white;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 20px;
+        margin: 10px 0 16px;
+    }
+
+    .result-label {
+        color: var(--green);
+        font-size: 12px;
+        font-weight: 700;
+        margin-bottom: 10px;
+    }
+
+    .result-text {
+        color: var(--text);
+        font-size: 16px;
+        line-height: 2;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+    }
+
+    .stat-card {
+        background: white;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 15px;
+        min-height: 88px;
+    }
+
+    .stat-label {
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 8px;
+    }
+
+    .stat-value {
+        font-size: 23px;
+        font-weight: 800;
+        color: var(--green-dark);
+    }
+
+    .footer-note {
+        color: #929C96;
+        text-align: center;
+        font-size: 11px;
+        line-height: 1.8;
+        margin-top: 30px;
+    }
+
+    div[data-testid="stAlert"] {
+        border-radius: 12px;
+    }
+
+    @media (max-width: 600px) {
+        .block-container {
+            padding: 1.2rem 1rem 2rem;
+        }
+
+        .panel {
+            padding: 16px;
+            border-radius: 15px;
+        }
+
+        .hero-title {
+            letter-spacing: -1px;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --------------------------------------------------
+# 상단 브랜드
+# --------------------------------------------------
+st.markdown(
+    """
+    <div class="brand">
+        <div class="brand-icon">✍</div>
+        <div>
+            <div class="brand-name">바른글</div>
+            <div class="brand-sub">KOREAN SPELL CHECKER</div>
+        </div>
+    </div>
+
+    <div class="hero">
+        <div class="hero-tag">✦ 더 정확한 글쓰기</div>
+        <div class="hero-title">
+            당신의 문장을<br>더 바르게 다듬어 드려요.
+        </div>
+        <p class="hero-desc">
+            맞춤법과 띄어쓰기를 확인하고<br>
+            더 자연스러운 문장으로 교정해 보세요.
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --------------------------------------------------
+# 세션 상태 초기화
+# --------------------------------------------------
+if "corrected_text" not in st.session_state:
+    st.session_state.corrected_text = ""
+
+if "original_text" not in st.session_state:
+    st.session_state.original_text = ""
+
+if "error_count" not in st.session_state:
+    st.session_state.error_count = 0
+
+if "check_time" not in st.session_state:
+    st.session_state.check_time = 0.0
+
+if "has_result" not in st.session_state:
+    st.session_state.has_result = False
+
+# --------------------------------------------------
+# 입력 영역
+# --------------------------------------------------
+st.markdown('<div class="panel">', unsafe_allow_html=True)
+
+st.markdown(
+    """
+    <div class="section-label">검사할 문장</div>
+    <div class="section-help">
+        교정하고 싶은 문장이나 글을 입력해 주세요.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+examples = {
+    "예문 선택": "",
+    "일상 문장": "오늘은 날씨가 너무 좋아서 산책을 가고 싶습니다.",
+    "맞춤법 예시": "제가 할수 있는 일을 찾아 볼께요.",
+    "업무용 문장": "회의 내용을 확인 하신 후 답변 부탁 드립니다.",
+}
+
+selected_example = st.selectbox(
+    "예문 선택",
+    options=list(examples.keys()),
+    label_visibility="collapsed",
+    help="예문을 선택하면 입력창에 문장이 채워집니다.",
+)
+
+if selected_example != st.session_state.get("last_example", "예문 선택"):
+    if selected_example != "예문 선택":
+        st.session_state.input_text = examples[selected_example]
+    st.session_state.last_example = selected_example
+
+if "input_text" not in st.session_state:
+    st.session_state.input_text = ""
+
+input_text = st.text_area(
+    "검사할 문장 입력",
+    key="input_text",
+    height=220,
+    max_chars=500,
+    placeholder=(
+        "예: 오늘은 날씨가 너무 좋아서 산책을 가고 싶습니다.\n"
+        "이곳에 문장을 입력해 주세요."
+    ),
+    label_visibility="collapsed",
+)
+
+character_count = len(input_text)
+
+left, right = st.columns([1, 1])
+
+with left:
+    st.caption(f"📝 {character_count} / 500자")
+
+with right:
+    if st.button("내용 지우기", use_container_width=True):
+        st.session_state.input_text = ""
+        st.session_state.corrected_text = ""
+        st.session_state.original_text = ""
+        st.session_state.error_count = 0
+        st.session_state.has_result = False
+        st.rerun()
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# --------------------------------------------------
+# 검사 실행
+# --------------------------------------------------
+if st.button(
+    "✓  맞춤법 검사하기",
+    type="primary",
+    use_container_width=True,
+):
+    text_to_check = st.session_state.input_text.strip()
+
+    if not text_to_check:
+        st.warning("검사할 문장을 먼저 입력해 주세요.")
+    elif len(text_to_check) > 500:
+        st.warning("한 번에 최대 500자까지 검사할 수 있습니다.")
     else:
-        opening = "안녕하세요.\n"
-        ending = "\n\n확인 부탁드립니다.\n감사합니다."
+        try:
+            with st.spinner("문장을 꼼꼼하게 확인하고 있어요..."):
+                start_time = time.time()
+                result = spell_checker.check(text_to_check)
+                elapsed = time.time() - start_time
 
-    # 이미 인사말이 있다면 중복하지 않음
-    if result.startswith(("안녕하세요", "안녕하십니까")):
-        opening = ""
+            corrected = getattr(result, "checked", None)
+            error_count = getattr(result, "errors", None)
 
-    return opening + result.strip() + ending
+            if not isinstance(corrected, str) or not corrected.strip():
+                st.error(
+                    "검사 결과를 받아오지 못했습니다. "
+                    "잠시 후 다시 시도해 주세요."
+                )
+                st.session_state.has_result = False
+            else:
+                st.session_state.original_text = text_to_check
+                st.session_state.corrected_text = corrected
+                st.session_state.error_count = (
+                    error_count
+                    if isinstance(error_count, int)
+                    else 0
+                )
+                st.session_state.check_time = elapsed
+                st.session_state.has_result = True
 
-
-def get_feedback(style):
-    """상대방에게 전달할 수 있는 부드러운 피드백 예시."""
-    messages = {
-        "맞춤법이 자주 틀릴 때": (
-            "내용은 잘 이해했어요! 😊\n"
-            "다만 중요한 내용은 서로 오해하지 않도록 "
-            "맞춤법과 띄어쓰기를 한 번만 더 확인해 주시면 좋겠어요."
-        ),
-        "메일이 너무 짧거나 무뚝뚝할 때": (
-            "빠르게 회신해 주셔서 감사합니다!\n"
-            "메일에 간단한 인사말이나 요청 배경을 덧붙여 주시면 "
-            "내용을 이해하고 답변하기가 더 수월할 것 같아요."
-        ),
-        "반말이나 무례한 표현을 사용할 때": (
-            "업무 관련 소통에서는 서로 존중하는 표현을 사용하면 좋겠습니다. "
-            "앞으로는 조금 더 정중한 말투로 이야기 나눌 수 있을까요?"
-        ),
-        "답장을 계속 늦게 할 때": (
-            "바쁘신 점 이해합니다. 😊\n"
-            "바로 답변하기 어려우시면 확인 예정 시점이라도 알려 주시면 "
-            "업무 일정을 조율하는 데 도움이 될 것 같습니다."
-        ),
-        "같은 실수가 반복될 때": (
-            "이전에 말씀드린 부분이 다시 확인되어 공유드립니다.\n"
-            "다음부터는 발송 전에 체크리스트를 활용해 함께 확인해 보면 좋겠습니다."
-        ),
-    }
-    return messages.get(style, "")
-
-
-# ---------- 머리말 ----------
-st.markdown(
-    "<div style='text-align:center; font-size:3rem;'>💌 🧸 🌷</div>",
-    unsafe_allow_html=True,
-)
-st.title("말랑말랑 문장수선소")
-st.markdown(
-    "<div style='text-align:center; color:#986681;'>"
-    "틀려도 괜찮아, 함께 다듬으면 되니까! ✨<br>"
-    "맞춤법부터 메일 예절까지, 한 문장씩 말랑하게."
-    "</div>",
-    unsafe_allow_html=True,
-)
-st.write("")
-
-with st.expander("🌼 이곳은 어떤 곳인가요?"):
-    st.write(
-        "맞춤법이나 메일 예절이 익숙하지 않은 사람을 "
-        "무조건 지적하기보다는, 더 편하고 정확하게 소통할 방법을 "
-        "함께 찾아보는 공간이에요."
-    )
-    st.caption("사람을 고치려 하기보다, 함께 사용하는 문장을 개선해 봐요.")
-
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📝 맞춤법 검사",
-    "💌 메일 변신",
-    "🗣️ 부드러운 피드백",
-    "📚 메일 예절 도감",
-])
-
-
-# ---------- 탭 1: 맞춤법 검사 ----------
-with tab1:
-    st.subheader("📝 맞춤법 톡톡")
-    st.write("보내기 전에 문장을 한 번 점검해 봐요.")
-
-    spell_text = st.text_area(
-        "검사할 문장을 입력해 주세요.",
-        placeholder="예: 내일까지 자료를 보내주시면 감사하겠습니다",
-        height=150,
-        key="spell_text",
-    )
-
-    if st.button("🔎 맞춤법 검사하기", key="spell_button"):
-        if not spell_text.strip():
-            st.warning("검사할 문장을 먼저 입력해 주세요.")
-        elif len(spell_text) > 5000:
-            st.warning("한 번에 5,000자 이하로 입력해 주세요.")
-        else:
-            with st.spinner("문장을 꼼꼼히 살펴보고 있어요..."):
-                try:
-                    from hanspell import spell_checker
-
-                    checked = spell_checker.check(spell_text)
-                    corrected = checked.checked
-
-                    st.success("검사가 완료되었어요! 🌷")
-                    st.markdown("#### ✨ 다듬은 문장")
-                    st.text_area(
-                        "교정 결과",
-                        value=corrected,
-                        height=150,
-                        key="spell_result",
-                    )
-
-                    if corrected.strip() == spell_text.strip():
-                        st.info("검사 결과, 입력한 문장과 교정 결과가 같아요.")
-                    else:
-                        st.markdown("#### 🔍 수정 전")
-                        st.code(spell_text)
-                        st.markdown("#### 💗 수정 후")
-                        st.code(corrected)
-
-                    st.caption(
-                        "자동 교정은 문맥에 따라 부정확할 수 있어요. "
-                        "이름, 전문 용어, 의도한 표현은 직접 확인해 주세요."
-                    )
-
-                except ImportError:
-                    st.error(
-                        "맞춤법 검사 라이브러리를 불러오지 못했어요. "
-                        "requirements.txt에 py-hanspell이 있는지 확인해 주세요."
-                    )
-                except Exception:
-                    st.error(
-                        "현재 맞춤법 검사 서비스에 연결하지 못했어요. 😢\n\n"
-                        "인터넷 연결이나 외부 서비스 상태를 확인한 뒤 "
-                        "잠시 후 다시 시도해 주세요. 다른 기능은 정상적으로 사용할 수 있어요."
-                    )
-
-
-# ---------- 탭 2: 메일 변신 ----------
-with tab2:
-    st.subheader("💌 메일 변신소")
-    st.write("조금 딱딱해도 괜찮아요. 상황에 맞게 정중한 표현으로 바꿔 봐요.")
-
-    purpose = st.selectbox(
-        "어떤 상황인가요?",
-        ["일반 업무", "부탁", "사과", "감사", "재촉"],
-    )
-
-    purpose_map = {
-        "일반 업무": "일반",
-        "부탁": "부탁",
-        "사과": "사과",
-        "감사": "감사",
-        "재촉": "재촉",
-    }
-
-    mail_text = st.text_area(
-        "바꾸고 싶은 문장",
-        placeholder="예: 자료 빨리 보내줘요. 아직 안 왔어요.",
-        height=140,
-        key="mail_text",
-    )
-
-    if st.button("🎀 정중한 문장으로 바꾸기", key="mail_button"):
-        if not mail_text.strip():
-            st.warning("먼저 바꾸고 싶은 문장을 입력해 주세요.")
-        elif len(mail_text) > 5000:
-            st.warning("한 번에 5,000자 이하로 입력해 주세요.")
-        else:
-            result = convert_to_email(
-                mail_text,
-                purpose_map[purpose],
-            )
-            st.markdown("#### 🌸 말랑하게 바뀐 문장")
-            st.text_area(
-                "완성된 문장",
-                value=result,
-                height=220,
-                key="mail_result",
+        except Exception:
+            st.session_state.has_result = False
+            st.error(
+                "맞춤법 검사 서비스에 연결하지 못했습니다. "
+                "인터넷 연결을 확인하거나 잠시 후 다시 시도해 주세요."
             )
             st.caption(
-                "정해진 표현을 바탕으로 변환한 결과예요. "
-                "문장 사이에 같은 표현이 반복되거나 문맥에 맞지 않을 수 있으니 "
-                "보내기 전에 한 번 읽어 주세요."
+                "외부 검사 서비스의 점검, 요청 제한 또는 "
+                "응답 형식 변경으로 검사가 실패할 수 있습니다."
             )
 
+# --------------------------------------------------
+# 검사 결과
+# --------------------------------------------------
+if st.session_state.has_result:
+    original = st.session_state.original_text
+    corrected = st.session_state.corrected_text
+    errors = st.session_state.error_count
 
-# ---------- 탭 3: 부드러운 피드백 ----------
-with tab3:
-    st.subheader("🗣️ 어떻게 말해야 할까요?")
-    st.write(
-        "상대방을 창피하게 만들지 않으면서도 필요한 점을 전달해 봐요."
-    )
+    st.markdown("### 검사 결과")
 
-    feedback_type = st.selectbox(
-        "어떤 상황인가요?",
-        [
-            "맞춤법이 자주 틀릴 때",
-            "메일이 너무 짧거나 무뚝뚝할 때",
-            "반말이나 무례한 표현을 사용할 때",
-            "답장을 계속 늦게 할 때",
-            "같은 실수가 반복될 때",
-        ],
-        key="feedback_type",
-    )
+    stat1, stat2 = st.columns(2)
 
-    if st.button("💗 표현 추천받기", key="feedback_button"):
-        st.markdown("#### 이렇게 말해 보세요")
-        st.info(get_feedback(feedback_type))
-
-    st.markdown("---")
-    st.markdown("#### 🧸 기억하면 좋은 세 가지")
-    st.markdown(
-        """
-        - **사람 대신 행동을 이야기하기:** "넌 왜 그래?"보다
-          "이 부분을 확인해 주시면 좋겠어요."
-        - **기준을 구체적으로 알려 주기:** 무엇을 어떻게 바꾸면 되는지 설명하기.
-        - **공개적으로 망신 주지 않기:** 민감한 피드백은 가능하면 개인적으로 전달하기.
-        """
-    )
-
-
-# ---------- 탭 4: 메일 예절 도감 ----------
-with tab4:
-    st.subheader("📚 초보자를 위한 메일 예절 도감")
-
-    with st.expander("1. 메일 제목은 어떻게 쓰나요?", expanded=True):
-        st.write("목적과 핵심 내용을 짧게 적으면 좋아요.")
-        st.markdown("**좋은 예시**")
-        st.code("[자료 요청] 10월 행사 안내 자료 전달 부탁드립니다")
-        st.markdown("**피하면 좋은 예시**")
-        st.code("안녕하세요 / 질문 있어요 / 급해요")
-
-    with st.expander("2. 기본적인 업무 메일 구조"):
-        st.code(
-            "제목: [업무명] 확인 요청\n\n"
-            "안녕하세요, 담당자님.\n\n"
-            "다름이 아니라, 아래 내용에 대한 확인을 부탁드리고자 메일드립니다.\n"
-            "가능하실 때 검토 후 회신해 주시면 감사하겠습니다.\n\n"
-            "감사합니다.\n"
-            "홍길동 드림"
+    with stat1:
+        st.markdown(
+            f"""
+            <div class="stat-card">
+                <div class="stat-label">검사 상태</div>
+                <div class="stat-value" style="font-size:19px;">
+                    ✓ 검사 완료
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-    with st.expander("3. 자주 쓰는 표현 바꾸기"):
-        examples = [
-            ("이거 해주세요", "이 부분을 진행해 주시면 감사하겠습니다."),
-            ("빨리 답 주세요", "가능하실 때 회신 부탁드립니다."),
-            ("왜 안 했어요?", "해당 작업의 진행 상황을 확인 부탁드립니다."),
-            ("몰라요", "현재 정확한 내용을 확인 중입니다."),
-            ("확인했어요?", "확인 여부를 알려 주시면 감사하겠습니다."),
-        ]
+    with stat2:
+        st.markdown(
+            f"""
+            <div class="stat-card">
+                <div class="stat-label">감지된 오류 수</div>
+                <div class="stat-value">{errors}개</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        for before, after in examples:
-            st.markdown(f"**❌ {before}**")
-            st.markdown(f"**💗 {after}**")
-            st.write("")
-
-    with st.expander("4. 보내기 전 10초 체크리스트"):
-        checks = [
-            "제목만 보고도 내용을 알 수 있나요?",
-            "받는 사람과 첨부 파일을 확인했나요?",
-            "맞춤법과 띄어쓰기를 점검했나요?",
-            "요청 내용과 기한을 분명하게 적었나요?",
-            "상대방이 불쾌하게 받아들일 표현은 없나요?",
-        ]
-
-        for i, item in enumerate(checks):
-            st.checkbox(item, key=f"mail_check_{i}")
-
-    st.success(
-        "🌷 메일 예절은 사람마다 익숙한 정도가 달라요. "
-        "처음부터 완벽하기보다 하나씩 익히는 것이 중요해요."
+    st.markdown(
+        f"""
+        <div class="result-box">
+            <div class="result-label">✦ 교정된 문장</div>
+            <div class="result-text">{html.escape(corrected)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
+    if original == corrected:
+        st.success("입력한 문장과 교정 결과가 같습니다.")
+    else:
+        st.info(
+            "교정 결과를 확인한 후 실제 의도와 문맥에 맞는지 "
+            "검토해 주세요."
+        )
 
-# ---------- 하단 안내 ----------
-st.markdown("---")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.download_button(
+            label="교정 결과 다운로드",
+            data=corrected,
+            file_name="바른글_교정결과.txt",
+            mime="text/plain; charset=utf-8",
+            use_container_width=True,
+        )
+
+    with col2:
+        st.button(
+            "새 문장 검사하기",
+            use_container_width=True,
+            on_click=lambda: st.session_state.update(
+                has_result=False,
+                corrected_text="",
+                original_text="",
+            ),
+        )
+
+    with st.expander("원문과 교정 결과 비교하기"):
+        st.markdown("**검사 전 원문**")
+        st.text(original)
+        st.markdown("**검사 후 결과**")
+        st.text(corrected)
+
+    st.caption(
+        f"검사 시간: {st.session_state.check_time:.2f}초 · "
+        "자동 교정 결과는 문맥에 따라 직접 확인해 주세요."
+    )
+
+# --------------------------------------------------
+# 하단 안내
+# --------------------------------------------------
 st.markdown(
-    "<div style='text-align:center; color:#ad879a;'>"
-    "made with 💗 말랑말랑 문장수선소<br>"
-    "<span style='font-size:0.85rem;'>"
-    "좋은 소통은 완벽한 맞춤법보다 서로를 존중하는 마음에서 시작돼요."
-    "</span></div>",
+    """
+    <div class="footer-note">
+        바른글 · 한국어 맞춤법 및 띄어쓰기 도우미<br>
+        외부 검사 서비스를 이용하며, 결과는 문맥에 따라 달라질 수 있습니다.
+    </div>
+    """,
     unsafe_allow_html=True,
 )

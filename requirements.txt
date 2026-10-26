@@ -1,2 +1,5 @@
 streamlit>=1.30.0
 requests>=2.31.0
+
+streamlit==1.50.0
+git+https://github.com/ssut/py-hanspell.git

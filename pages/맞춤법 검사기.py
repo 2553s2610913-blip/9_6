@@ -398,11 +398,18 @@ if st.button(
                 st.session_state.check_time = elapsed
                 st.session_state.has_result = True
 
-        except Exception:
+        
+        except Exception as e:
             st.session_state.has_result = False
-            st.error(
-                "맞춤법 검사 서비스에 연결하지 못했습니다. "
-                "인터넷 연결을 확인하거나 잠시 후 다시 시도해 주세요."
+            st.error("맞춤법 검사 중 오류가 발생했습니다.")
+
+            with st.expander("오류 상세 정보 확인"):
+                st.code(f"{type(e).__name__}: {e}")
+                st.caption(
+                    "이 내용을 확인하면 설치 문제인지, "
+                    "외부 서비스 응답 문제인지 구분하는 데 도움이 됩니다."
+                )
+
             )
             st.caption(
                 "외부 검사 서비스의 점검, 요청 제한 또는 "

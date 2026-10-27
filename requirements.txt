@@ -2,5 +2,5 @@ streamlit>=1.30.0
 requests>=2.31.0
 
 
-streamlit
-google-genai
+streamlit>=1.30.0
+google-genai>=0.1.0

@@ -115,22 +115,27 @@ def check_spelling(client, text, tone_option):
     }}
     """
 
-    try:
-        # 모델명을 gemini-2.5-flash로 업데이트
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.1
+    # 사용할 Gemini 모델 목록 (오류 발생 시 자동으로 호환 모델로 시도)
+    models_to_try = ['gemini-2.5-flash', 'gemini-1.5-flash']
+
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1
+                )
             )
-        )
-        # JSON 파싱
-        result = json.loads(response.text)
-        return result
-    except Exception as e:
-        st.error(f"⚠️ 맞춤법 검사 중 오류가 발생했습니다: {str(e)}")
-        return None
+            # JSON 파싱
+            result = json.loads(response.text)
+            return result
+        except Exception as e:
+            # 마지막 모델까지 실패한 경우 오류 메시지 출력
+            if model_name == models_to_try[-1]:
+                st.error(f"⚠️ 맞춤법 검사 중 오류가 발생했습니다: {str(e)}")
+                return None
 
 
 # ---------------------------------------------------------

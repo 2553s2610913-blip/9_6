@@ -68,7 +68,7 @@ def get_gemini_client():
 
 
 # ---------------------------------------------------------
-# 4. Gemini 맞춤법 검사 로직 (자동 우회 포함)
+# 4. Gemini 맞춤법 검사 로직
 # ---------------------------------------------------------
 def check_spelling(client, text, tone_option):
     prompt = f"""
@@ -96,28 +96,20 @@ def check_spelling(client, text, tone_option):
     }}
     """
 
-    # 503 과부하 발생 시 자동으로 순차 시도할 모델 후보 목록
-    candidate_models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.5-pro']
-    last_exception = None
-
-    for model_name in candidate_models:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1
-                )
+    try:
+        # Gemini 표준 모델(gemini-2.5-flash) 단일 호출
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1
             )
-            return json.loads(response.text)
-        except Exception as e:
-            last_exception = e
-            # 503 과부하나 404가 발생하면 다음 예비 모델로 계속 시도
-            continue
-
-    st.error(f"⚠️ 현재 AI 서버 트래픽이 많아 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요. (상세 오류: {str(last_exception)})")
-    return None
+        )
+        return json.loads(response.text)
+    except Exception as e:
+        st.error(f"⚠️ 맞춤법 검사 중 오류가 발생했습니다: {str(e)}")
+        return None
 
 
 # ---------------------------------------------------------

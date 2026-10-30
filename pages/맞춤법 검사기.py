@@ -4,7 +4,7 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. 페이지 기본 설정
+# 1. 페이지 설정
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="바른 한글 - 맞춤법 검사기",
@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# 2. 커스텀 CSS (밝고 화사한 스타일)
+# 2. 화사한 밝은 테마 커스텀 CSS
 # ---------------------------------------------------------
 st.markdown("""
 <style>
@@ -57,18 +57,18 @@ st.markdown("""
 
 
 # ---------------------------------------------------------
-# 3. Gemini API 클라이언트 초기화
+# 3. Gemini API 클라이언트 로드
 # ---------------------------------------------------------
 def get_gemini_client():
-    if "GEMINI_API_KEY" in st.secrets:
-        return genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+    if "GEMINI_API_KEY" in st.secrets and st.secrets["GEMINI_API_KEY"].strip():
+        return genai.Client(api_key=st.secrets["GEMINI_API_KEY"].strip())
     else:
-        st.error("🔑 `GEMINI_API_KEY`가 설정되지 않았습니다. Streamlit Secrets 설정을 확인해주세요.")
+        st.error("🔑 Streamlit Secrets에 `GEMINI_API_KEY`가 설정되어 있지 않습니다. App Settings > Secrets에서 키를 입력해주세요.")
         st.stop()
 
 
 # ---------------------------------------------------------
-# 4. Gemini 맞춤법 검사 로직
+# 4. 맞춤법 검사 핵심 함수 (안정적인 구조)
 # ---------------------------------------------------------
 def check_spelling(client, text, tone_option):
     prompt = f"""
@@ -76,13 +76,13 @@ def check_spelling(client, text, tone_option):
     아래 [원문 입력]을 분석하여 맞춤법, 띄어쓰기, 문맥에 맞는 어휘, 표준어를 교정해주세요.
 
     [문체 요청]
-    - 원문의 톤앤매너(문체)를 그대로 유지하면서 교정해주세요. (옵션 선택값: {tone_option})
+    - 원문의 톤앤매너(문체)를 그대로 유지하면서 교정해주세요. (옵션: {tone_option})
 
     [원문 입력]
     {text}
 
     [응답 규칙]
-    반드시 아래 JSON 형식으로만 정확히 응답해주세요. 마크다운 등 기타 텍스트를 포함하지 마세요.
+    반드시 아래 JSON 형식으로만 응답해주세요.
     {{
         "corrected_text": "교정된 전체 문장",
         "has_errors": true 또는 false,
@@ -90,14 +90,14 @@ def check_spelling(client, text, tone_option):
             {{
                 "original": "틀린 단어/문구",
                 "corrected": "고친 단어/문구",
-                "reason": "고친 이유 (간결하고 친절하게 설명)"
+                "reason": "고친 이유 설명"
             }}
         ]
     }}
     """
 
     try:
-        # Gemini 표준 모델(gemini-2.5-flash) 단일 호출
+        # 최신 안정화 모델 사용
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
@@ -106,16 +106,26 @@ def check_spelling(client, text, tone_option):
                 temperature=0.1
             )
         )
-        return json.loads(response.text)
+        
+        # 텍스트 정제 후 JSON 파싱
+        raw_text = response.text.strip()
+        if raw_text.startswith("```json"):
+            raw_text = raw_text.replace("```json", "", 1).rstrip("`").strip()
+        elif raw_text.startswith("```"):
+            raw_text = raw_text.replace("```", "", 1).rstrip("`").strip()
+            
+        return json.loads(raw_text)
+
     except Exception as e:
-        st.error(f"⚠️ 맞춤법 검사 중 오류가 발생했습니다: {str(e)}")
+        st.error(f"⚠️ 맞춤법 검사 호출 중 오류가 발생했습니다: {str(e)}")
         return None
 
 
 # ---------------------------------------------------------
-# 5. UI 구성 및 메인 앱 실행
+# 5. UI 및 실행 메인 함수
 # ---------------------------------------------------------
 def main():
+    # 사이드바
     with st.sidebar:
         st.title("✨ 바른 한글 도우미")
         st.write("밝고 깨끗한 한글 맞춤법 교정기입니다.")
@@ -129,13 +139,15 @@ def main():
         st.markdown("---")
         st.markdown("### 💡 사용 팁")
         st.info(
-            "- 오탈자, 띄어쓰기, 문맥에 맞는 맞춤법을 정밀 교정합니다.\n"
-            "- '수정 사유 카드'를 통해 왜 틀렸는지 쉽게 배울 수 있습니다."
+            "- 오탈자, 띄어쓰기, 문맥 맞춤법을 세심하게 다듬어 줍니다.\n"
+            "- 수정된 이유를 카드로 확인해 보세요!"
         )
 
+    # 헤더
     st.markdown('<div class="main-title">✨ 스마트 한글 맞춤법 검사기</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-title">Gemini AI가 문맥을 파악하여 바르고 고운 한글로 다듬어 드립니다.</div>', unsafe_allow_html=True)
 
+    # 본문 2열 레이아웃
     col_input, col_output = st.columns([1, 1], gap="medium")
 
     with col_input:
@@ -164,7 +176,7 @@ def main():
 
         if submit_btn:
             if not user_input.strip():
-                st.warning("검사할 문장을 먼저 입력해주세요!")
+                st.warning("검사할 문장을 입력해 주세요!")
             else:
                 with st.spinner("맞춤법과 문맥을 세심하게 다듬는 중..."):
                     client = get_gemini_client()
@@ -173,6 +185,7 @@ def main():
                     if res:
                         st.session_state['result'] = res
 
+        # 결과 표시
         if 'result' in st.session_state and st.session_state['result']:
             result = st.session_state['result']
             corrected_text = result.get("corrected_text", "")
@@ -187,8 +200,8 @@ def main():
             else:
                 st.markdown(f"**총 {len(corrections)}개의 부분이 교정되었습니다.**")
                 for idx, item in enumerate(corrections, 1):
-                    with st.expander(f"📍 [{idx}] '{item.get('original')}' ➡️ '{item.get('corrected')}'", expanded=True):
-                        st.write(f"**이유:** {item.get('reason')}")
+                    with st.expander(f"📍 [{idx}] '{item.get('original', '')}' ➡️ '{item.get('corrected', '')}'", expanded=True):
+                        st.write(f"**이유:** {item.get('reason', '')}")
         else:
             st.info("왼쪽 상자에 내용을 입력하고 [맞춤법 검사하기] 버튼을 눌러주세요.")
 

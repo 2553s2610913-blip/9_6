@@ -17,15 +17,19 @@ RELATIONS = ["상급자(윗사람)", "동료/동급", "하급자/후배", "외�
 TONES = ["정중하고 공손하게", "간결하고 깔끔하게", "친근하지만 예의 바르게", "매우 격식 있게"]
 LENGTHS = ["짧게 (3~4문장)", "보통 (5~8문장)", "자세히 (9문장 이상)"]
 
-GEMINI_TIMEOUT = 25  # 초. 너무 느리면 다음 모델로 넘어갑니다.
+GEMINI_TIMEOUT = 25  # 초
 
 
 class ModelNotFound(RuntimeError):
-    """모델명이 없거나 더 이상 제공되지 않을 때"""
+    """모델이 없거나 더 이상 제공되지 않을 때"""
 
 
 class ModelBusy(RuntimeError):
     """서버가 혼잡하거나 응답이 느릴 때"""
+
+
+class QuotaExceeded(ModelBusy):
+    """사용 한도(429)를 초과했을 때"""
 
 
 def get_secret(name: str) -> str:
@@ -79,15 +83,17 @@ def call_gemini(api_key: str, model: str, system: str, prompt: str) -> str:
         raise ModelBusy(f"모델 '{model}'의 응답이 너무 느립니다.")
     if r.status_code == 404:
         raise ModelNotFound(f"모델 '{model}'을(를) 사용할 수 없습니다. ({r.text[:200]})")
-    if r.status_code in (429, 500, 502, 503, 504):
-        raise ModelBusy(f"Gemini 서버가 혼잡합니다 ({r.status_code}). 잠시 후 다시 시도해 주세요.")
+    if r.status_code == 429:
+        raise QuotaExceeded("Gemini 사용 한도를 초과했습니다(429).")
+    if r.status_code in (500, 502, 503, 504):
+        raise ModelBusy(f"Gemini 서버가 혼잡합니다 ({r.status_code}).")
     if r.status_code != 200:
         raise RuntimeError(f"Gemini 오류 ({r.status_code}): {r.text[:300]}")
     try:
         parts = r.json()["candidates"][0]["content"]["parts"]
         return "".join(p.get("text", "") for p in parts).strip()
     except Exception:
-        raise RuntimeError("Gemini 응답을 해석하지 못했습니다. 입력 내용을 확인해 주세요.")
+        raise RuntimeError("Gemini 응답을 해석하지 못했습니다.")
 
 
 def list_gemini_models(api_key: str) -> list:
@@ -113,14 +119,16 @@ def list_gemini_models(api_key: str) -> list:
         return []
 
 
-def call_gemini_auto(api_key: str, model: str, system: str, prompt: str) -> tuple:
-    """(결과 텍스트, 안내 문구). 혼잡/느림/없음이면 재시도 후 다른 모델로 전환"""
+def call_gemini_auto(api_key: str, model: str, system: str, prompt: str) -> str:
+    """혼잡/느림/없음이면 재시도 후 다른 모델로 전환. 모두 실패하면 오류 발생"""
     last_error = None
 
-    # 1) 지정한 모델로 최대 2번
     for _ in range(2):
         try:
-            return call_gemini(api_key, model, system, prompt), ""
+            return call_gemini(api_key, model, system, prompt)
+        except QuotaExceeded as e:   # 한도 초과는 같은 모델로 재시도하지 않음
+            last_error = e
+            break
         except ModelBusy as e:
             last_error = e
             time.sleep(2)
@@ -128,11 +136,9 @@ def call_gemini_auto(api_key: str, model: str, system: str, prompt: str) -> tupl
             last_error = e
             break
 
-    # 2) 다른 Flash 모델로 시도
     for c in [m for m in list_gemini_models(api_key) if m != model][:2]:
         try:
-            text = call_gemini(api_key, c, system, prompt)
-            return text, f"'{model}'을(를) 쓸 수 없어(혼잡/느림/없음) '{c}'(으)로 자동 변경해 변환했습니다."
+            return call_gemini(api_key, c, system, prompt)
         except (ModelBusy, ModelNotFound) as e:
             last_error = e
             continue
@@ -158,7 +164,7 @@ def call_openai(api_key: str, model: str, system: str, prompt: str) -> str:
     try:
         return r.json()["choices"][0]["message"]["content"].strip()
     except Exception:
-        raise RuntimeError("OpenAI 응답을 해석하지 못했습니다. 모델명을 확인해 주세요.")
+        raise RuntimeError("OpenAI 응답을 해석하지 못했습니다.")
 
 
 # ---------------- 공통 ----------------
@@ -187,28 +193,26 @@ def fallback_mail(d: dict) -> tuple:
 
 
 def generate(d: dict, provider: str, api_key: str, model: str) -> tuple:
-    """(제목, 본문, 안내문구, 수준) 반환. 수준: info 또는 warning"""
+    """(제목, 본문, 오류내용) 반환. 오류내용은 성공하면 빈 문자열"""
     if not api_key:
         s, b = fallback_mail(d)
-        return s, b, "API 키가 없어 AI 대신 기본 템플릿으로 변환했습니다.", "warning"
+        return s, b, "API 키가 없어 기본 템플릿을 사용했습니다."
     system, prompt = build_prompt(d)
     try:
         if provider == "Gemini":
-            raw, notice = call_gemini_auto(api_key, model, system, prompt)
+            raw = call_gemini_auto(api_key, model, system, prompt)
         else:
-            raw, notice = call_openai(api_key, model, system, prompt), ""
+            raw = call_openai(api_key, model, system, prompt)
         if not raw:
             raise RuntimeError("AI가 빈 응답을 보냈습니다.")
         s, b = split_subject_body(raw)
-        return s, b, notice, "info"
-    except requests.exceptions.Timeout:
-        msg = "응답 시간이 초과되었습니다."
+        return s, b, ""
     except requests.exceptions.RequestException as e:
         msg = f"네트워크 오류: {e}"
     except Exception as e:
         msg = str(e)
     s, b = fallback_mail(d)
-    return s, b, f"⚠️ {msg}\n대신 기본 템플릿으로 변환했습니다.", "warning"
+    return s, b, msg
 
 
 # ---------------- 세션 상태 ----------------
@@ -235,7 +239,6 @@ with st.sidebar:
 
     model = st.text_input("모델명", value=DEFAULT_MODELS[provider],
                           key=f"model_{provider}").strip() or DEFAULT_MODELS[provider]
-    st.caption("Gemini는 모델이 느리거나 사용 불가여도 다른 모델로 자동 변경을 시도합니다.")
 
     st.divider()
     st.subheader("🕘 최근 변환 기록")
@@ -288,9 +291,9 @@ if run:
             "deadline": deadline.strip(), "extra": extra.strip(),
         }
         with st.spinner("메일을 작성하는 중입니다... (최대 1~2분)"):
-            subject, body, notice, level = generate(data, provider, api_key, model)
-        item = {"time": datetime.now().strftime("%H:%M:%S"), "subject": subject, "body": body,
-                "notice": notice, "level": level}
+            subject, body, error = generate(data, provider, api_key, model)
+        item = {"time": datetime.now().strftime("%H:%M:%S"), "subject": subject,
+                "body": body, "error": error}
         st.session_state.result = item
         st.session_state.history.append(item)
 
@@ -300,11 +303,6 @@ with right:
     if not res:
         st.info("왼쪽에 내용을 입력하고 '메일체로 변환'을 눌러주세요.")
     else:
-        if res.get("notice"):
-            if res.get("level") == "warning":
-                st.warning(res["notice"])
-            else:
-                st.info(res["notice"])
         uid = f"{res['time']}_{len(res['body'])}"
         subject_edit = st.text_input("제목", value=res["subject"], key=f"subj_{uid}")
         body_edit = st.text_area("본문 (직접 수정 가능)", value=res["body"], height=380, key=f"body_{uid}")
@@ -314,3 +312,8 @@ with right:
         st.code(full, language=None)
         st.download_button("💾 텍스트 파일로 저장", data=full.encode("utf-8"),
                            file_name="mail.txt", mime="text/plain", use_container_width=True)
+
+        # 문제가 있었을 때만 접힌 상태로 표시 (필요 없으면 아래 3줄을 지우세요)
+        if res.get("error"):
+            with st.expander("변환 상세 정보 (AI 변환이 안 될 때만 확인)"):
+                st.write(res["error"])

@@ -7,7 +7,9 @@ import streamlit as st
 st.set_page_config(page_title="메일체 변환기", page_icon="✉️", layout="wide")
 
 DEFAULT_MODELS = {
-      "Gemini": "gemini-3.8-flash",
+    "Gemini": "gemini-3.8-flash",
+    "ChatGPT (OpenAI)": "gpt-4o-mini",
+}
 }
 
 SITUATIONS = ["업무 요청", "진행 상황 보고", "일정 조율", "자료 요청", "독촉/리마인드", "감사 인사", "사과/양해 요청", "기타"]

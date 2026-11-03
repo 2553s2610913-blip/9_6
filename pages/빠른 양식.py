@@ -10,12 +10,15 @@ DEFAULT_MODELS = {
     "Gemini": "gemini-3.8-flash",
     "ChatGPT (OpenAI)": "gpt-4o-mini",
 }
-}
 
 SITUATIONS = ["업무 요청", "진행 상황 보고", "일정 조율", "자료 요청", "독촉/리마인드", "감사 인사", "사과/양해 요청", "기타"]
 RELATIONS = ["상급자(윗사람)", "동료/동급", "하급자/후배", "외부 거래처/고객"]
 TONES = ["정중하고 공손하게", "간결하고 깔끔하게", "친근하지만 예의 바르게", "매우 격식 있게"]
 LENGTHS = ["짧게 (3~4문장)", "보통 (5~8문장)", "자세히 (9문장 이상)"]
+
+
+class ModelNotFound(RuntimeError):
+    """모델명이 없거나 더 이상 제공되지 않을 때 사용하는 오류"""
 
 
 def get_secret(name: str) -> str:
@@ -63,14 +66,53 @@ def call_gemini(api_key: str, model: str, system: str, prompt: str) -> str:
         "generationConfig": {"temperature": 0.6},
     }
     r = requests.post(url, headers=headers, json=body, timeout=60)
+    if r.status_code == 404:
+        raise ModelNotFound(f"모델 '{model}'을(를) 사용할 수 없습니다. ({r.text[:200]})")
     if r.status_code != 200:
         raise RuntimeError(f"Gemini 오류 ({r.status_code}): {r.text[:300]}")
-    data = r.json()
     try:
-        parts = data["candidates"][0]["content"]["parts"]
+        parts = r.json()["candidates"][0]["content"]["parts"]
         return "".join(p.get("text", "") for p in parts).strip()
     except Exception:
-        raise RuntimeError("Gemini 응답을 해석하지 못했습니다. 입력 내용이나 모델명을 확인해 주세요.")
+        raise RuntimeError("Gemini 응답을 해석하지 못했습니다. 입력 내용을 확인해 주세요.")
+
+
+def list_gemini_models(api_key: str) -> list:
+    """현재 사용할 수 있는 Flash 계열 모델 이름 목록 (최신 순)"""
+    try:
+        r = requests.get(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+            headers={"x-goog-api-key": api_key},
+            timeout=30,
+        )
+        if r.status_code != 200:
+            return []
+        bad = ["image", "tts", "live", "audio", "embedding", "lite", "thinking", "vision", "robotics"]
+        names = []
+        for m in r.json().get("models", []):
+            name = m.get("name", "").replace("models/", "")
+            methods = m.get("supportedGenerationMethods", [])
+            if "generateContent" in methods and "flash" in name and not any(b in name for b in bad):
+                names.append(name)
+        names.sort(reverse=True)
+        return names
+    except Exception:
+        return []
+
+
+def call_gemini_auto(api_key: str, model: str, system: str, prompt: str) -> tuple:
+    """(결과 텍스트, 안내 문구). 모델이 없으면 다른 모델로 자동 재시도"""
+    try:
+        return call_gemini(api_key, model, system, prompt), ""
+    except ModelNotFound as first_error:
+        candidates = [m for m in list_gemini_models(api_key) if m != model]
+        for c in candidates[:4]:
+            try:
+                text = call_gemini(api_key, c, system, prompt)
+                return text, f"입력한 모델 '{model}'을(를) 쓸 수 없어 '{c}'(으)로 자동 변경해 변환했습니다."
+            except ModelNotFound:
+                continue
+        raise first_error
 
 
 def call_openai(api_key: str, model: str, system: str, prompt: str) -> str:
@@ -118,19 +160,20 @@ def fallback_mail(d: dict) -> tuple:
 
 
 def generate(d: dict, provider: str, api_key: str, model: str) -> tuple:
+    """(제목, 본문, 안내문구, 안내수준) 반환. 수준: info 또는 warning"""
     if not api_key:
         s, b = fallback_mail(d)
-        return s, b, "API 키가 없어 AI 대신 기본 템플릿으로 변환했습니다."
+        return s, b, "API 키가 없어 AI 대신 기본 템플릿으로 변환했습니다.", "warning"
     system, prompt = build_prompt(d)
     try:
         if provider == "Gemini":
-            raw = call_gemini(api_key, model, system, prompt)
+            raw, notice = call_gemini_auto(api_key, model, system, prompt)
         else:
-            raw = call_openai(api_key, model, system, prompt)
+            raw, notice = call_openai(api_key, model, system, prompt), ""
         if not raw:
             raise RuntimeError("AI가 빈 응답을 보냈습니다.")
         s, b = split_subject_body(raw)
-        return s, b, ""
+        return s, b, notice, "info"
     except requests.exceptions.Timeout:
         msg = "응답 시간이 초과되었습니다."
     except requests.exceptions.RequestException as e:
@@ -138,7 +181,7 @@ def generate(d: dict, provider: str, api_key: str, model: str) -> tuple:
     except Exception as e:
         msg = str(e)
     s, b = fallback_mail(d)
-    return s, b, f"⚠️ {msg}\n대신 기본 템플릿으로 변환했습니다."
+    return s, b, f"⚠️ {msg}\n대신 기본 템플릿으로 변환했습니다.", "warning"
 
 
 if "history" not in st.session_state:
@@ -162,8 +205,8 @@ with st.sidebar:
         if not api_key:
             st.info("키가 없으면 AI 없이 기본 템플릿으로 변환됩니다.")
 
-    model = st.text_input("모델명", value=DEFAULT_MODELS[provider]).strip() or DEFAULT_MODELS[provider]
-    st.caption("모델명이 바뀌어 오류가 나면 최신 모델명으로 수정하세요.")
+    model = st.text_input("모델명", value=DEFAULT_MODELS[provider], key=f"model_{provider}").strip() or DEFAULT_MODELS[provider]
+    st.caption("모델명이 틀려도 Gemini는 사용 가능한 모델로 자동 변경을 시도합니다.")
 
     st.divider()
     st.subheader("🕘 최근 변환 기록")
@@ -216,8 +259,9 @@ if run:
             "deadline": deadline.strip(), "extra": extra.strip(),
         }
         with st.spinner("메일을 작성하는 중입니다..."):
-            subject, body, notice = generate(data, provider, api_key, model)
-        item = {"time": datetime.now().strftime("%H:%M"), "subject": subject, "body": body, "notice": notice}
+            subject, body, notice, level = generate(data, provider, api_key, model)
+        item = {"time": datetime.now().strftime("%H:%M:%S"), "subject": subject, "body": body,
+                "notice": notice, "level": level}
         st.session_state.result = item
         st.session_state.history.append(item)
 
@@ -228,10 +272,13 @@ with right:
         st.info("왼쪽에 내용을 입력하고 '메일체로 변환'을 눌러주세요.")
     else:
         if res.get("notice"):
-            st.warning(res["notice"])
-        subject_edit = st.text_input("제목", value=res["subject"], key=f"subj_{res['time']}_{len(res['body'])}")
-        body_edit = st.text_area("본문 (직접 수정 가능)", value=res["body"], height=380,
-                                 key=f"body_{res['time']}_{len(res['body'])}")
+            if res.get("level") == "warning":
+                st.warning(res["notice"])
+            else:
+                st.info(res["notice"])
+        uid = f"{res['time']}_{len(res['body'])}"
+        subject_edit = st.text_input("제목", value=res["subject"], key=f"subj_{uid}")
+        body_edit = st.text_area("본문 (직접 수정 가능)", value=res["body"], height=380, key=f"body_{uid}")
 
         full = f"제목: {subject_edit}\n\n{body_edit}"
         st.caption("아래 박스 오른쪽 위의 복사 아이콘을 누르면 전체가 복사됩니다.")

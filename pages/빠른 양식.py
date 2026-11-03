@@ -78,4 +78,239 @@ def call_gemini(api_key: str, model: str, system: str, prompt: str) -> str:
     except requests.exceptions.Timeout:
         raise ModelBusy(f"모델 '{model}'의 응답이 너무 느립니다.")
     if r.status_code == 404:
-        raise
+        raise ModelNotFound(f"모델 '{model}'을(를) 사용할 수 없습니다. ({r.text[:200]})")
+    if r.status_code in (429, 500, 502, 503, 504):
+        raise ModelBusy(f"Gemini 서버가 혼잡합니다 ({r.status_code}). 잠시 후 다시 시도해 주세요.")
+    if r.status_code != 200:
+        raise RuntimeError(f"Gemini 오류 ({r.status_code}): {r.text[:300]}")
+    try:
+        parts = r.json()["candidates"][0]["content"]["parts"]
+        return "".join(p.get("text", "") for p in parts).strip()
+    except Exception:
+        raise RuntimeError("Gemini 응답을 해석하지 못했습니다. 입력 내용을 확인해 주세요.")
+
+
+def list_gemini_models(api_key: str) -> list:
+    """현재 사용할 수 있는 Flash 계열 모델 이름 목록 (최신 순)"""
+    try:
+        r = requests.get(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+            headers={"x-goog-api-key": api_key},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return []
+        bad = ["image", "tts", "live", "audio", "embedding", "lite", "thinking", "vision", "robotics"]
+        names = []
+        for m in r.json().get("models", []):
+            name = m.get("name", "").replace("models/", "")
+            methods = m.get("supportedGenerationMethods", [])
+            if "generateContent" in methods and "flash" in name and not any(b in name for b in bad):
+                names.append(name)
+        names.sort(reverse=True)
+        return names
+    except Exception:
+        return []
+
+
+def call_gemini_auto(api_key: str, model: str, system: str, prompt: str) -> tuple:
+    """(결과 텍스트, 안내 문구). 혼잡/느림/없음이면 재시도 후 다른 모델로 전환"""
+    last_error = None
+
+    # 1) 지정한 모델로 최대 2번
+    for _ in range(2):
+        try:
+            return call_gemini(api_key, model, system, prompt), ""
+        except ModelBusy as e:
+            last_error = e
+            time.sleep(2)
+        except ModelNotFound as e:
+            last_error = e
+            break
+
+    # 2) 다른 Flash 모델로 시도
+    for c in [m for m in list_gemini_models(api_key) if m != model][:2]:
+        try:
+            text = call_gemini(api_key, c, system, prompt)
+            return text, f"'{model}'을(를) 쓸 수 없어(혼잡/느림/없음) '{c}'(으)로 자동 변경해 변환했습니다."
+        except (ModelBusy, ModelNotFound) as e:
+            last_error = e
+            continue
+
+    raise last_error
+
+
+# ---------------- OpenAI ----------------
+def call_openai(api_key: str, model: str, system: str, prompt: str) -> str:
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.6,
+    }
+    r = requests.post(url, headers=headers, json=body, timeout=45)
+    if r.status_code != 200:
+        raise RuntimeError(f"OpenAI 오류 ({r.status_code}): {r.text[:300]}")
+    try:
+        return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        raise RuntimeError("OpenAI 응답을 해석하지 못했습니다. 모델명을 확인해 주세요.")
+
+
+# ---------------- 공통 ----------------
+def split_subject_body(text: str) -> tuple:
+    text = text.strip().strip("`").strip()
+    m = re.match(r"^\s*제목\s*[:：]\s*(.+?)\s*\n+(?:-{3,}\s*\n+)?(.*)$", text, re.S)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    return "(제목 없음)", text
+
+
+def fallback_mail(d: dict) -> tuple:
+    """AI 없이 만드는 기본 템플릿"""
+    to = f"{d['to_name']} {d['to_rank']}님".strip()
+    me = " ".join(x for x in [d["my_org"], d["my_rank"], d["my_name"]] if x)
+    subject = f"[{d['situation']}] {d['work'][:25]}{'...' if len(d['work']) > 25 else ''}"
+    lines = [f"안녕하세요, {to}.", f"{me}입니다.", ""]
+    if d["work"]:
+        lines += [f"{d['work']}", ""]
+    if d["request"]:
+        lines += [f"다름이 아니라, {d['request']}", ""]
+    if d["deadline"]:
+        lines += [f"가능하시다면 {d['deadline']}까지 회신 부탁드립니다.", ""]
+    lines += ["바쁘신 와중에 시간 내어 확인해 주셔서 감사합니다.", "", "감사합니다.", me]
+    return subject, "\n".join(lines)
+
+
+def generate(d: dict, provider: str, api_key: str, model: str) -> tuple:
+    """(제목, 본문, 안내문구, 수준) 반환. 수준: info 또는 warning"""
+    if not api_key:
+        s, b = fallback_mail(d)
+        return s, b, "API 키가 없어 AI 대신 기본 템플릿으로 변환했습니다.", "warning"
+    system, prompt = build_prompt(d)
+    try:
+        if provider == "Gemini":
+            raw, notice = call_gemini_auto(api_key, model, system, prompt)
+        else:
+            raw, notice = call_openai(api_key, model, system, prompt), ""
+        if not raw:
+            raise RuntimeError("AI가 빈 응답을 보냈습니다.")
+        s, b = split_subject_body(raw)
+        return s, b, notice, "info"
+    except requests.exceptions.Timeout:
+        msg = "응답 시간이 초과되었습니다."
+    except requests.exceptions.RequestException as e:
+        msg = f"네트워크 오류: {e}"
+    except Exception as e:
+        msg = str(e)
+    s, b = fallback_mail(d)
+    return s, b, f"⚠️ {msg}\n대신 기본 템플릿으로 변환했습니다.", "warning"
+
+
+# ---------------- 세션 상태 ----------------
+if "history" not in st.session_state:
+    st.session_state.history = []
+if "result" not in st.session_state:
+    st.session_state.result = None
+
+# ---------------- 사이드바 ----------------
+with st.sidebar:
+    st.header("⚙️ AI 설정")
+    provider = st.radio("사용할 AI", list(DEFAULT_MODELS.keys()))
+    secret_name = "GEMINI_API_KEY" if provider == "Gemini" else "OPENAI_API_KEY"
+    saved_key = get_secret(secret_name)
+
+    if saved_key:
+        st.success("저장된 API 키를 사용합니다.")
+        api_key = saved_key
+    else:
+        api_key = st.text_input(f"{provider} API 키", type="password",
+                                help="키는 저장되지 않고 현재 세션에서만 사용됩니다.").strip()
+        if not api_key:
+            st.info("키가 없으면 AI 없이 기본 템플릿으로 변환됩니다.")
+
+    model = st.text_input("모델명", value=DEFAULT_MODELS[provider],
+                          key=f"model_{provider}").strip() or DEFAULT_MODELS[provider]
+    st.caption("Gemini는 모델이 느리거나 사용 불가여도 다른 모델로 자동 변경을 시도합니다.")
+
+    st.divider()
+    st.subheader("🕘 최근 변환 기록")
+    if st.session_state.history:
+        for i, h in enumerate(reversed(st.session_state.history[-5:])):
+            if st.button(f"{h['time']} · {h['subject'][:18]}", key=f"hist_{i}"):
+                st.session_state.result = h
+    else:
+        st.caption("아직 기록이 없습니다.")
+
+# ---------------- 메인 화면 ----------------
+st.title("✉️ 메일체 변환기")
+st.caption("핵심 내용만 적으면 상황과 직급에 맞는 정중한 이메일로 바꿔드립니다.")
+
+left, right = st.columns(2, gap="large")
+
+with left:
+    st.subheader("1. 정보 입력")
+    c1, c2 = st.columns(2)
+    to_name = c1.text_input("수신자 이름", placeholder="김민수")
+    to_rank = c2.text_input("수신자 직급", placeholder="팀장")
+    c3, c4, c5 = st.columns(3)
+    my_org = c3.text_input("내 소속", placeholder="마케팅팀")
+    my_rank = c4.text_input("내 직급", placeholder="대리")
+    my_name = c5.text_input("내 이름 (선택)", placeholder="홍길동")
+
+    work = st.text_area("업무 내용", height=110, placeholder="예) 3분기 광고 성과 보고서 초안 작성 완료")
+    request = st.text_area("요청 사항", height=90, placeholder="예) 검토 후 수정사항 알려주세요")
+
+    c6, c7 = st.columns(2)
+    situation = c6.selectbox("메일 목적", SITUATIONS)
+    relation = c7.selectbox("수신자와의 관계", RELATIONS)
+    c8, c9 = st.columns(2)
+    tone = c8.selectbox("말투", TONES)
+    length = c9.selectbox("분량", LENGTHS, index=1)
+    deadline = st.text_input("회신 기한 (선택)", placeholder="예) 이번 주 금요일 오후 5시")
+    extra = st.text_input("추가 지시 (선택)", placeholder="예) 첨부파일이 있다고 언급해줘")
+
+    run = st.button("✨ 메일체로 변환", type="primary", use_container_width=True)
+
+if run:
+    if not work.strip() and not request.strip():
+        st.warning("업무 내용 또는 요청 사항을 입력해 주세요.")
+    else:
+        data = {
+            "to_name": to_name.strip(), "to_rank": to_rank.strip(),
+            "my_org": my_org.strip(), "my_rank": my_rank.strip(), "my_name": my_name.strip(),
+            "work": work.strip(), "request": request.strip(),
+            "situation": situation, "relation": relation, "tone": tone, "length": length,
+            "deadline": deadline.strip(), "extra": extra.strip(),
+        }
+        with st.spinner("메일을 작성하는 중입니다... (최대 1~2분)"):
+            subject, body, notice, level = generate(data, provider, api_key, model)
+        item = {"time": datetime.now().strftime("%H:%M:%S"), "subject": subject, "body": body,
+                "notice": notice, "level": level}
+        st.session_state.result = item
+        st.session_state.history.append(item)
+
+with right:
+    st.subheader("2. 변환 결과")
+    res = st.session_state.result
+    if not res:
+        st.info("왼쪽에 내용을 입력하고 '메일체로 변환'을 눌러주세요.")
+    else:
+        if res.get("notice"):
+            if res.get("level") == "warning":
+                st.warning(res["notice"])
+            else:
+                st.info(res["notice"])
+        uid = f"{res['time']}_{len(res['body'])}"
+        subject_edit = st.text_input("제목", value=res["subject"], key=f"subj_{uid}")
+        body_edit = st.text_area("본문 (직접 수정 가능)", value=res["body"], height=380, key=f"body_{uid}")
+
+        full = f"제목: {subject_edit}\n\n{body_edit}"
+        st.caption("아래 박스 오른쪽 위의 복사 아이콘을 누르면 전체가 복사됩니다.")
+        st.code(full, language=None)
+        st.download_button("💾 텍스트 파일로 저장", data=full.encode("utf-8"),
+                           file_name="mail.txt", mime="text/plain", use_container_width=True)
